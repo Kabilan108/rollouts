@@ -66,4 +66,4 @@ jobs:
           set -euo pipefail
           . "$HOME/.nix-profile/etc/profile.d/nix.sh"
           cachix watch-exec kabilan108 -- \
-            nix run github:serokell/deploy-rs -- ./servers#heighliner
+            nix develop . --command deploy --ssh-user root .#heighliner
