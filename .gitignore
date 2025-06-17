@@ -6,5 +6,5 @@ result-*
 .direnv/
 .envrc
 
-secrets/
+*.env
 build/
