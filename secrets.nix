@@ -5,7 +5,7 @@ let
   remote = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINw1nu9dpsmy5B7fFHtctGOjhbtusjYvo6DJZvno02tx root@nixos";
 in
 {
-  "env.age".publicKeys = [
+  "servers/secrets/system.age".publicKeys = [
     sietch
     remote
   ];

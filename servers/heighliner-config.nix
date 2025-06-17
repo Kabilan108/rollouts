@@ -23,7 +23,7 @@ lib.recursiveUpdate {
   system.stateVersion = "25.05";
   networking.hostName = "heighliner";
 
-  age.secrets.env.file = ./env.age;
+  age.secrets.system.file = ./secrets/system.age;
 
   virtualisation.docker.enable = true;
   virtualisation.docker.enableOnBoot = true;
@@ -40,7 +40,7 @@ lib.recursiveUpdate {
 
   systemd.services.traefik.serviceConfig = {
     User = "traefik";
-    EnvironmentFile = "${config.age.secrets.env.path}";
+    EnvironmentFile = "${config.age.secrets.system.path}";
   };
 
   systemd.tmpfiles.rules = [
@@ -145,7 +145,7 @@ lib.recursiveUpdate {
     "https://kabilan108.cachix.org"
   ];
   nix.settings.trusted-public-keys = [
-      "kabilan108.cachix.org-1:g8OqmhpqE1Bz9DjKTV17uQ3yzsfGcDB5fDgGfVC4t/o="
+    "kabilan108.cachix.org-1:g8OqmhpqE1Bz9DjKTV17uQ3yzsfGcDB5fDgGfVC4t/o="
   ];
 
   services.openssh = {
