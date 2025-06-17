@@ -1,0 +1,49 @@
+name: Release CLI Binary
+
+on:
+  push:
+    tags:
+      - 'cli-v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build and Release CLI
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'cli/go.mod'
+
+      - name: Create build directory
+        run: mkdir -p build
+
+      - name: Build CLI
+        run: |
+          cd cli
+          make build/rollout-linux-amd64
+        env:
+          CGO_ENABLED: 0
+          GOOS: linux
+          GOARCH: amd64
+
+      - name: Create release package
+        run: |
+          cp cli/build/rollout-linux-amd64 rollout
+          tar czf rollout-linux-amd64.tar.gz rollout
+          rm rollout
+
+      - name: Create Release and Upload Assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: rollout-linux-amd64.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

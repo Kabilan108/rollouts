@@ -1,0 +1,10 @@
+result
+result-*
+
+.deploy-gc/
+
+.direnv/
+.envrc
+
+secrets/
+build/
