@@ -36,7 +36,7 @@
         version = "latest";
         src = ./cli;
 
-        vendorHash = "sha256-DgMLOEl2ZG613LKt9k7X8QttZrhjgPu5RQOAJfroF+U=";
+        vendorHash = "sha256-pn603h6eS1TOatadmfJJMkxTbxdu6zhRpAhFAu43ors=";
 
         buildPhase = ''
           runHook preBuild
