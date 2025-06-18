@@ -397,7 +397,7 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer $DEPLOY_PAT" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
-            https://api.github.com/repos/Kabilan108/dotfiles/dispatches \
+            https://api.github.com/repos/Kabilan108/rollouts/dispatches \
             -d '{"event_type":"deploy"}'`
 
 	workflowBox := strings.Builder{}
