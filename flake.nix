@@ -58,12 +58,21 @@
           maintainers = [ "kabilan108" ];
         };
       };
+
+      rollout-with-deps = pkgs.buildEnv {
+        name = "rollout-with-dependencies";
+        paths = [
+          rolloutCli
+          agenix.packages.${system}.default
+        ];
+        meta = rolloutCli.meta;
+      };
     in
     {
       # cli package - installable with `nix install github:kabilan108/rollouts#cli`
       packages.${system} = {
         cli = rolloutCli;
-        default = rolloutCli; # `nix install github:kabilan108/rollouts` will install cli
+        default = rollout-with-deps; # `nix install github:kabilan108/rollouts`
       };
 
       # server configurations
