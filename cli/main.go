@@ -8,7 +8,9 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -16,17 +18,51 @@ import (
 )
 
 var (
+	// Catppuccin Mocha Colors
+	primaryColor  = lipgloss.Color("#cba6f7") // mauve
+	accentColor   = lipgloss.Color("#f9e2af") // yellow
+	mutedColor    = lipgloss.Color("#a6adc8") // subtext0
+	inactiveColor = lipgloss.Color("#45475a") // surface1
+	errorColor    = lipgloss.Color("#f38ba8") // red
+	successColor  = lipgloss.Color("#a6e3a1") // green
+	bgColor       = lipgloss.Color("#1e1e2e") // base
+	borderColor   = lipgloss.Color("#45475a") // surface1
+	textColor     = lipgloss.Color("#cdd6f4") // text
+
+	// Styles
+	headerStyle = lipgloss.NewStyle().
+			Foreground(primaryColor).
+			Bold(true)
+
+	subHeaderStyle = lipgloss.NewStyle().
+			Foreground(mutedColor)
+
 	promptStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#EDB73A"))
+			Foreground(primaryColor).
+			Bold(true)
 
 	inputStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#374151"))
+			Foreground(textColor)
+
+	completedStyle = lipgloss.NewStyle().
+			Foreground(inactiveColor)
 
 	errorStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#DC2626"))
+			Foreground(errorColor).
+			Bold(true)
 
 	successStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#059669"))
+			Foreground(successColor).
+			Bold(true)
+
+	boxStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(borderColor).
+			Padding(1, 2).
+			Margin(0, 0, 1, 0)
+
+	mutedStyle = lipgloss.NewStyle().
+			Foreground(mutedColor)
 )
 
 type NixAppConfig struct {
@@ -112,6 +148,9 @@ type model struct {
 	current      int
 	finished     bool
 	interactions []string
+	progress     progress.Model
+	errorMsg     string
+	validating   bool
 }
 
 func initialModel(config AppConfig) model {
@@ -135,6 +174,11 @@ func initialModel(config AppConfig) model {
 
 	ti := textinput.New()
 	ti.Focus()
+	ti.Prompt = ""
+	ti.CharLimit = 100
+
+	prog := progress.New(progress.WithDefaultGradient())
+	prog.Width = 40
 
 	return model{
 		input:        ti,
@@ -142,11 +186,20 @@ func initialModel(config AppConfig) model {
 		fields:       fields,
 		current:      0,
 		interactions: []string{},
+		progress:     prog,
 	}
 }
 
 func (m model) Init() tea.Cmd {
 	return textinput.Blink
+}
+
+type tickMsg time.Time
+
+func tickCmd() tea.Cmd {
+	return tea.Tick(time.Millisecond*100, func(t time.Time) tea.Msg {
+		return tickMsg(t)
+	})
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -156,32 +209,49 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c", "esc":
 			return m, tea.Quit
 		case "enter":
-			value := m.input.Value()
+			value := strings.TrimSpace(m.input.Value())
+			m.errorMsg = ""
 
-			var prompt string
+			// Validation
+			if value == "" && m.fields[m.current] != "subdomain" {
+				m.errorMsg = "This field is required"
+				return m, nil
+			}
+
+			var prompt, displayValue string
 			switch m.fields[m.current] {
 			case "name":
-				prompt = "Project Name: "
+				prompt = "Project Name"
 				m.config.Name = value
+				displayValue = value
 			case "image":
-				prompt = "Docker Image URL: "
+				prompt = "Docker Image"
 				m.config.Image = value
+				displayValue = value
 			case "domain":
-				prompt = "Main Domain: "
+				prompt = "Main Domain"
 				m.config.Domain = value
+				displayValue = value
 			case "subdomain":
-				prompt = "Subdomain (optional): "
+				prompt = "Subdomain"
 				m.config.Subdomain = value
+				if value == "" {
+					displayValue = "(none)"
+				} else {
+					displayValue = value
+				}
 			case "port":
-				prompt = "Container Port: "
-				if value != "" {
-					if port, err := strconv.Atoi(value); err == nil {
-						m.config.Port = port
-					}
+				prompt = "Container Port"
+				if port, err := strconv.Atoi(value); err == nil && port > 0 && port < 65536 {
+					m.config.Port = port
+					displayValue = value
+				} else {
+					m.errorMsg = "Please enter a valid port number (1-65535)"
+					return m, nil
 				}
 			}
 
-			m.interactions = append(m.interactions, prompt+value)
+			m.interactions = append(m.interactions, fmt.Sprintf("%s: %s", prompt, displayValue))
 
 			m.current++
 			if m.current >= len(m.fields) {
@@ -191,6 +261,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			m.input.SetValue("")
 			return m, textinput.Blink
+		}
+	case tickMsg:
+		if m.validating {
+			return m, tickCmd()
 		}
 	}
 
@@ -206,30 +280,61 @@ func (m model) View() string {
 
 	var output strings.Builder
 
+	// Header
+	header := headerStyle.Render("🚀 Rollout Configuration")
+	subHeader := subHeaderStyle.Render("Generate NixOS container configs with Traefik")
+	output.WriteString(header + "\n" + subHeader + "\n\n")
+
+	// Progress
+	progressText := fmt.Sprintf("Step %d of %d", m.current+1, len(m.fields))
+	progressPercent := float64(m.current) / float64(len(m.fields))
+	progressView := m.progress.ViewAs(progressPercent)
+	output.WriteString(progressView + "\n" + mutedStyle.Render(progressText) + "\n\n")
+
+	// Previous interactions - compact
 	for _, interaction := range m.interactions {
-		output.WriteString(interaction + "\n")
+		output.WriteString(completedStyle.Render(interaction) + "\n")
 	}
 
-	var prompt string
+	// Current field
+	var prompt, placeholder string
 	switch m.fields[m.current] {
 	case "name":
-		prompt = "Project Name: "
+		prompt = "Project Name"
+		placeholder = "my-awesome-app"
 	case "image":
-		prompt = "Docker Image URL: "
+		prompt = "Docker Image"
+		placeholder = "nginx:latest"
 	case "domain":
-		prompt = "Main Domain: "
+		prompt = "Main Domain"
+		placeholder = "example.com"
 	case "subdomain":
-		prompt = "Subdomain (optional): "
+		prompt = "Subdomain (optional)"
+		placeholder = "api"
 	case "port":
-		prompt = "Container Port: "
+		prompt = "Container Port"
+		placeholder = "80"
 	}
 
-	output.WriteString(promptStyle.Render(prompt) + inputStyle.Render(m.input.View()))
+	m.input.Placeholder = placeholder
+
+	// Simple input
+	output.WriteString(promptStyle.Render("→ "+prompt) + "\n")
+	output.WriteString(inputStyle.Render(m.input.View()) + "\n")
+
+	if m.errorMsg != "" {
+		output.WriteString(errorStyle.Render("✗ "+m.errorMsg) + "\n")
+	}
+
+	output.WriteString(mutedStyle.Render("Press Enter to continue • Ctrl+C to quit"))
 
 	return output.String()
 }
 
 func printGitHubAction(branch string) {
+	fmt.Println(headerStyle.Render("🚀 GitHub Actions Workflow"))
+	fmt.Println(subHeaderStyle.Render("Copy this workflow to .github/workflows/deploy.yml"))
+
 	yaml := `name: Build and Push to GitHub Container Registry
 
 on:
@@ -294,8 +399,14 @@ jobs:
             https://api.github.com/repos/Kabilan108/dotfiles/dispatches \
             -d '{"event_type":"deploy"}'`
 
-	fmt.Fprintln(os.Stderr, promptStyle.Render("remember to run `gh secret set DEPLOY_PAT --body <TOKEN>` to set the necessary secrets"))
-	fmt.Fprintf(os.Stdout, yaml, branch)
+	workflowBox := strings.Builder{}
+	workflowBox.WriteString(mutedStyle.Render(fmt.Sprintf(yaml, branch)))
+	fmt.Println(boxStyle.Render(workflowBox.String()))
+
+	fmt.Println(promptStyle.Render("Next Steps:"))
+	fmt.Println("• Save this workflow to .github/workflows/deploy.yml")
+	fmt.Println("• Run: " + successStyle.Render("gh secret set DEPLOY_PAT --body <TOKEN>"))
+	fmt.Println("• Push to trigger the workflow")
 }
 
 func main() {
@@ -397,36 +508,63 @@ func generateAndWriteConfig(app AppConfig) {
 	}
 
 	nixConfig := config.Generate()
-	fmt.Println(successStyle.Render("Generated config:"))
-	fmt.Println(nixConfig)
+
+	// Configuration summary
+	fmt.Println(headerStyle.Render("✨ Configuration Generated"))
+	fmt.Println()
+
+	summaryBox := strings.Builder{}
+	summaryBox.WriteString(promptStyle.Render("Configuration Summary") + "\n")
+	summaryBox.WriteString(fmt.Sprintf("• Name: %s\n", successStyle.Render(config.Name)))
+	summaryBox.WriteString(fmt.Sprintf("• Image: %s\n", successStyle.Render(config.Image)))
+	if config.Subdomain != "" {
+		summaryBox.WriteString(fmt.Sprintf("• URL: %s\n", successStyle.Render(fmt.Sprintf("https://%s.%s", config.Subdomain, config.Domain))))
+	} else {
+		summaryBox.WriteString(fmt.Sprintf("• URL: %s\n", successStyle.Render(fmt.Sprintf("https://%s", config.Domain))))
+	}
+	summaryBox.WriteString(fmt.Sprintf("• Port: %s\n", successStyle.Render(fmt.Sprintf("%d", config.ContainerPort))))
+	summaryBox.WriteString(fmt.Sprintf("• Network: %s", successStyle.Render(config.Network)))
+	if config.HasSecrets {
+		summaryBox.WriteString(fmt.Sprintf("\n• Secrets: %s", successStyle.Render("Enabled")))
+	}
+	fmt.Println(boxStyle.Render(summaryBox.String()))
+
+	// Generated config
+	configBox := strings.Builder{}
+	configBox.WriteString(promptStyle.Render("Generated NixOS Configuration") + "\n")
+	configBox.WriteString(mutedStyle.Render(nixConfig))
+	fmt.Println(boxStyle.Render(configBox.String()))
 
 	if app.DryRun {
-		fmt.Println(promptStyle.Render("\n--dry-run enabled, not writing files or encrypting secrets."))
+		fmt.Println(promptStyle.Render("ℹ️ Dry run mode - no files written"))
 		return
 	}
 
+	// File operations
 	filePath := filepath.Join(app.ConfigDir, "apps", fmt.Sprintf("%s.nix", config.Name))
 	err := os.WriteFile(filePath, []byte(nixConfig), 0o644)
 	if err != nil {
-		fmt.Println(errorStyle.Render("Failed to write file: " + err.Error()))
+		fmt.Println(errorStyle.Render("✗ Failed to write file: " + err.Error()))
 		os.Exit(1)
 	}
-	fmt.Println(successStyle.Render("Written to " + filePath))
+	fmt.Println(successStyle.Render("✓ Configuration written to " + filePath))
 
 	if app.EnvFile != "" {
 		secretsNixPath := filepath.Join(app.ConfigDir, "..", "secrets.nix")
 		if err = updateSecretsNix(config.Name, secretsNixPath); err != nil {
-			fmt.Println(errorStyle.Render("Failed to update secrets.nix: " + err.Error()))
+			fmt.Println(errorStyle.Render("✗ Failed to update secrets.nix: " + err.Error()))
 			os.Exit(1)
 		}
-		fmt.Println(successStyle.Render("Updated " + secretsNixPath))
+		fmt.Println(successStyle.Render("✓ Updated " + secretsNixPath))
 
 		err = createAndEncryptSecret(app.EnvFile, config.Name, filepath.Join(app.ConfigDir, "apps"))
 		if err != nil {
-			fmt.Println(errorStyle.Render("Failed to encrypt secrets: " + err.Error()))
+			fmt.Println(errorStyle.Render("✗ Failed to encrypt secrets: " + err.Error()))
 			os.Exit(1)
 		}
 	}
+
+	fmt.Println(successStyle.Render("✨ Setup complete! Your application is ready to deploy."))
 }
 
 func updateSecretsNix(appName, secretsPath string) error {
@@ -438,7 +576,7 @@ func updateSecretsNix(appName, secretsPath string) error {
 	// check if .age file exists for the app
 	ageEntryPrefix := fmt.Sprintf(`"servers/apps/%s.age"`, appName)
 	if strings.Contains(string(content), ageEntryPrefix) {
-		fmt.Println(promptStyle.Render("Skipping " + ageEntryPrefix + " in " + secretsPath))
+		fmt.Println(mutedStyle.Render("ℹ️ Skipping " + ageEntryPrefix + " (already exists)"))
 		return nil
 	}
 
@@ -477,7 +615,7 @@ func createAndEncryptSecret(sourceEnvFile, appName, appsDir string) error {
 
 	encryptedFilePath := filepath.Join("servers", "apps", fmt.Sprintf("%s.age", appName))
 
-	fmt.Println(promptStyle.Render(fmt.Sprintf("Encrypting %s to %s", sourceEnvFile, encryptedFilePath)))
+	fmt.Println(promptStyle.Render(fmt.Sprintf("🔐 Encrypting %s to %s", sourceEnvFile, encryptedFilePath)))
 
 	// prepare the `agenix -e` command.
 	// we run it from the repository root so agenix can find secrets.nix.
@@ -490,7 +628,7 @@ func createAndEncryptSecret(sourceEnvFile, appName, appsDir string) error {
 		return fmt.Errorf("agenix encryption command failed:\n%s", string(output))
 	}
 
-	fmt.Println(string(output))
-	fmt.Println(successStyle.Render("Successfully encrypted secret to " + encryptedFilePath))
+	fmt.Println(mutedStyle.Render(string(output)))
+	fmt.Println(successStyle.Render("✓ Successfully encrypted secret to " + encryptedFilePath))
 	return nil
 }
