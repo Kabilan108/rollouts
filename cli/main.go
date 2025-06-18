@@ -139,6 +139,7 @@ type AppConfig struct {
 	Network   string
 	DryRun    bool
 	EnvFile   string
+	EditEnv   bool
 }
 
 type model struct {
@@ -430,6 +431,7 @@ func main() {
 		dryRun    bool
 		branch    string
 		envFile   string
+		edit      bool
 	)
 
 	initCmd := &cobra.Command{
@@ -446,6 +448,7 @@ func main() {
 				Network:   network,
 				DryRun:    dryRun,
 				EnvFile:   envFile,
+				EditEnv:   edit,
 			}
 			runInitWithAppConfig(c)
 		},
@@ -458,6 +461,7 @@ func main() {
 	initCmd.Flags().IntVar(&port, "port", 80, "port the container exposes (e.g., 80)")
 	initCmd.Flags().StringVar(&network, "network", "web", "traefik docker network")
 	initCmd.Flags().StringVar(&envFile, "env-file", "", "path to environment file. will be encrypted with agenix")
+	initCmd.Flags().BoolVar(&edit, "edit", false, "edit the environment file directly")
 	initCmd.Flags().BoolVar(&dryRun, "dry-run", false, "print out the generated config but don't write it to disk")
 
 	ghActionCmd := &cobra.Command{
@@ -469,8 +473,17 @@ func main() {
 	}
 	ghActionCmd.Flags().StringVar(&branch, "branch", "main", "branch to deploy from")
 
+	pushCmd := &cobra.Command{
+		Use:   "push",
+		Short: "commit and push changes to the rollouts repository",
+		Run: func(cmd *cobra.Command, args []string) {
+			runPushCommand()
+		},
+	}
+
 	rootCmd.AddCommand(initCmd)
 	rootCmd.AddCommand(ghActionCmd)
+	rootCmd.AddCommand(pushCmd)
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
@@ -492,6 +505,9 @@ func runInitWithAppConfig(app AppConfig) {
 	}
 
 	if finalModel.(model).finished {
+		if finalModel.(model).config.EditEnv {
+			fmt.Println(promptStyle.Render("Opening agenix editor for " + filepath.Join("servers", "apps", fmt.Sprintf("%s.age", finalModel.(model).config.Name))))
+		}
 		generateAndWriteConfig(finalModel.(model).config)
 	}
 }
@@ -504,7 +520,7 @@ func generateAndWriteConfig(app AppConfig) {
 		Subdomain:     app.Subdomain,
 		ContainerPort: app.Port,
 		Network:       app.Network,
-		HasSecrets:    app.EnvFile != "",
+		HasSecrets:    app.EnvFile != "" || (app.EditEnv && app.EnvFile == ""),
 	}
 
 	nixConfig := config.Generate()
@@ -549,7 +565,8 @@ func generateAndWriteConfig(app AppConfig) {
 	}
 	fmt.Println(successStyle.Render("✓ Configuration written to " + filePath))
 
-	if app.EnvFile != "" {
+	// Handle secrets if any are needed
+	if config.HasSecrets {
 		secretsNixPath := filepath.Join(app.ConfigDir, "..", "secrets.nix")
 		if err = updateSecretsNix(config.Name, secretsNixPath); err != nil {
 			fmt.Println(errorStyle.Render("✗ Failed to update secrets.nix: " + err.Error()))
@@ -557,10 +574,18 @@ func generateAndWriteConfig(app AppConfig) {
 		}
 		fmt.Println(successStyle.Render("✓ Updated " + secretsNixPath))
 
-		err = createAndEncryptSecret(app.EnvFile, config.Name, filepath.Join(app.ConfigDir, "apps"))
-		if err != nil {
-			fmt.Println(errorStyle.Render("✗ Failed to encrypt secrets: " + err.Error()))
-			os.Exit(1)
+		if app.EditEnv {
+			err = openAgenixEditor(config.Name, filepath.Join(app.ConfigDir, "apps"))
+			if err != nil {
+				fmt.Println(errorStyle.Render("✗ Failed to open agenix editor: " + err.Error()))
+				os.Exit(1)
+			}
+		} else if app.EnvFile != "" {
+			err = createAndEncryptSecret(app.EnvFile, config.Name, filepath.Join(app.ConfigDir, "apps"))
+			if err != nil {
+				fmt.Println(errorStyle.Render("✗ Failed to encrypt secrets: " + err.Error()))
+				os.Exit(1)
+			}
 		}
 	}
 
@@ -631,4 +656,118 @@ func createAndEncryptSecret(sourceEnvFile, appName, appsDir string) error {
 	fmt.Println(mutedStyle.Render(string(output)))
 	fmt.Println(successStyle.Render("✓ Successfully encrypted secret to " + encryptedFilePath))
 	return nil
+}
+
+func openAgenixEditor(appName, appsDir string) error {
+	encryptedFilePath := filepath.Join("servers", "apps", fmt.Sprintf("%s.age", appName))
+
+	fmt.Println(promptStyle.Render(fmt.Sprintf("🔐 Opening agenix editor for %s", encryptedFilePath)))
+
+	cmd := exec.Command("agenix", "-e", encryptedFilePath)
+	cmd.Dir = filepath.Join(appsDir, "..", "..")
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	err := cmd.Run()
+	if err != nil {
+		return fmt.Errorf("agenix editor command failed: %w", err)
+	}
+
+	fmt.Println(successStyle.Render("✓ Successfully edited secret " + encryptedFilePath))
+	return nil
+}
+
+func runPushCommand() {
+	repoDir := filepath.Join(os.Getenv("HOME"), "repos", "rollouts")
+	
+	// check if we're in the rollouts directory structure
+	if wd, err := os.Getwd(); err == nil {
+		if strings.Contains(wd, "rollouts") {
+			// Find the rollouts root by walking up the directory tree
+			dir := wd
+			for {
+				if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+					repoDir = dir
+					break
+				}
+				parent := filepath.Dir(dir)
+				if parent == dir {
+					// Reached filesystem root, use default
+					break
+				}
+				dir = parent
+			}
+		}
+	}
+
+	// Header
+	fmt.Println(headerStyle.Render("🚀 Git Push Automation"))
+	fmt.Println(subHeaderStyle.Render("Committing and pushing rollout changes"))
+	fmt.Println()
+
+	// Repository info
+	repoBox := strings.Builder{}
+	repoBox.WriteString(promptStyle.Render("Repository Information") + "\n")
+	repoBox.WriteString(fmt.Sprintf("• Directory: %s\n", successStyle.Render(repoDir)))
+	repoBox.WriteString(fmt.Sprintf("• Command: %s", mutedStyle.Render("git add . && git commit && git push")))
+	fmt.Println(boxStyle.Render(repoBox.String()))
+
+	// Stage changes
+	fmt.Println(promptStyle.Render("→ Staging changes..."))
+	addCmd := exec.Command("git", "add", ".")
+	addCmd.Dir = repoDir
+	if output, err := addCmd.CombinedOutput(); err != nil {
+		fmt.Println(errorStyle.Render("✗ Failed to stage changes: " + err.Error()))
+		if len(output) > 0 {
+			fmt.Println(mutedStyle.Render(string(output)))
+		}
+		os.Exit(1)
+	}
+	fmt.Println(successStyle.Render("✓ Changes staged successfully"))
+
+	// Commit changes
+	fmt.Println(promptStyle.Render("→ Creating commit..."))
+	commitCmd := exec.Command("git", "commit", "-m", "rollout: automated commit via push command")
+	commitCmd.Dir = repoDir
+	commitOutput, err := commitCmd.CombinedOutput()
+	if err != nil {
+		// check if it's just "nothing to commit"
+		if strings.Contains(string(commitOutput), "nothing to commit") {
+			fmt.Println(mutedStyle.Render("ℹ️ No changes to commit - repository is up to date"))
+			return
+		} else {
+			fmt.Println(errorStyle.Render("✗ Failed to commit changes: " + err.Error()))
+			if len(commitOutput) > 0 {
+				fmt.Println(mutedStyle.Render(string(commitOutput)))
+			}
+			os.Exit(1)
+		}
+	} else {
+		fmt.Println(successStyle.Render("✓ Commit created successfully"))
+		if len(commitOutput) > 0 {
+			fmt.Println(mutedStyle.Render(strings.TrimSpace(string(commitOutput))))
+		}
+	}
+
+	// Push changes
+	fmt.Println(promptStyle.Render("→ Pushing to remote..."))
+	pushCmd := exec.Command("git", "push")
+	pushCmd.Dir = repoDir
+	pushOutput, err := pushCmd.CombinedOutput()
+	if err != nil {
+		fmt.Println(errorStyle.Render("✗ Failed to push changes: " + err.Error()))
+		if len(pushOutput) > 0 {
+			fmt.Println(mutedStyle.Render(string(pushOutput)))
+		}
+		os.Exit(1)
+	}
+
+	fmt.Println(successStyle.Render("✓ Successfully pushed to remote"))
+	if len(pushOutput) > 0 {
+		fmt.Println(mutedStyle.Render(strings.TrimSpace(string(pushOutput))))
+	}
+	
+	fmt.Println()
+	fmt.Println(successStyle.Render("✨ Push completed! Your changes are now live."))
 }

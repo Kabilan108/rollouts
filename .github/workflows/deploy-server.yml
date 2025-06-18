@@ -13,6 +13,9 @@ concurrency:
 
 jobs:
   deploy:
+    if: |
+      github.event_name != 'push' ||
+      startsWith(github.event.head_commit.message, 'rollout: automated commit')
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
