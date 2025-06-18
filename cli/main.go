@@ -73,7 +73,7 @@ func (c *NixAppConfig) Generate() string {
 	var envFileAttr, ageSecretAttr string
 	if c.HasSecrets {
 		envFileAttr = fmt.Sprintf(`
-    EnvironmentFile = "${config.age.secrets."%s".path}";`, c.Name)
+    environmentFiles = [ config.age.secrets."%s".path ];`, c.Name)
 		ageSecretAttr = fmt.Sprintf(`
   age.secrets."%s".file = ./%s.age;`, c.Name, c.Name)
 	}

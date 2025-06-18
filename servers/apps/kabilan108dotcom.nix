@@ -14,5 +14,7 @@
       "traefik.http.routers.kabilan108dotcom.entrypoints" = "websecure";
       "traefik.http.routers.kabilan108dotcom.tls.certresolver" = "letsencrypt";
     };
+    environmentFiles = [ config.age.secrets."kabilan108dotcom".path ];
   };
+  age.secrets."kabilan108dotcom".file = ./kabilan108dotcom.age;
 }

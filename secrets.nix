@@ -11,4 +11,10 @@ in
     remote
     jacurutu
   ];
+
+  "servers/apps/kabilan108dotcom.age".publicKeys = [
+    sietch
+    remote
+    jacurutu
+  ];
 }
