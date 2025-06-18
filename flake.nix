@@ -64,6 +64,7 @@
       packages.${system} = {
         cli = rolloutCli;
         default = rolloutCli; # `nix install github:kabilan108/rollouts`
+        agenix = agenix.packages.${system}.default;
       };
 
       # server configurations
