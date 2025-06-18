@@ -362,8 +362,17 @@ func main() {
 	}
 	ghActionCmd.Flags().StringVar(&branch, "branch", "main", "branch to deploy from")
 
+	pushCmd := &cobra.Command{
+		Use:   "push",
+		Short: "commit and push changes to the rollouts repository",
+		Run: func(cmd *cobra.Command, args []string) {
+			runPushCommand()
+		},
+	}
+
 	rootCmd.AddCommand(initCmd)
 	rootCmd.AddCommand(ghActionCmd)
+	rootCmd.AddCommand(pushCmd)
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
@@ -526,4 +535,75 @@ func openAgenixEditor(appName, appsDir string) error {
 
 	fmt.Println(successStyle.Render("Successfully edited secret " + encryptedFilePath))
 	return nil
+}
+
+func runPushCommand() {
+	repoDir := filepath.Join(os.Getenv("HOME"), "repos", "rollouts")
+	
+	// check if we're in the rollouts directory structure
+	if wd, err := os.Getwd(); err == nil {
+		if strings.Contains(wd, "rollouts") {
+			// Find the rollouts root by walking up the directory tree
+			dir := wd
+			for {
+				if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+					repoDir = dir
+					break
+				}
+				parent := filepath.Dir(dir)
+				if parent == dir {
+					// Reached filesystem root, use default
+					break
+				}
+				dir = parent
+			}
+		}
+	}
+
+	fmt.Println(promptStyle.Render("Running git commit && git push in " + repoDir))
+
+	// run git add . first to stage any changes
+	addCmd := exec.Command("git", "add", ".")
+	addCmd.Dir = repoDir
+	if output, err := addCmd.CombinedOutput(); err != nil {
+		fmt.Println(errorStyle.Render("Failed to stage changes: " + err.Error()))
+		if len(output) > 0 {
+			fmt.Println(string(output))
+		}
+		os.Exit(1)
+	}
+
+	commitCmd := exec.Command("git", "commit", "-m", "rollout: automated commit via push command")
+	commitCmd.Dir = repoDir
+	commitOutput, err := commitCmd.CombinedOutput()
+	if err != nil {
+		// check if it's just "nothing to commit"
+		if strings.Contains(string(commitOutput), "nothing to commit") {
+			fmt.Println(promptStyle.Render("No changes to commit"))
+			os.Exit(0)
+		} else {
+			fmt.Println(errorStyle.Render("Failed to commit changes: " + err.Error()))
+			if len(commitOutput) > 0 {
+				fmt.Println(string(commitOutput))
+			}
+			os.Exit(1)
+		}
+	} else {
+		fmt.Print(string(commitOutput))
+	}
+
+	// run git push
+	pushCmd := exec.Command("git", "push")
+	pushCmd.Dir = repoDir
+	pushOutput, err := pushCmd.CombinedOutput()
+	if err != nil {
+		fmt.Println(errorStyle.Render("Failed to push changes: " + err.Error()))
+		if len(pushOutput) > 0 {
+			fmt.Println(string(pushOutput))
+		}
+		os.Exit(1)
+	}
+
+	fmt.Print(string(pushOutput))
+	fmt.Println(successStyle.Render("Successfully pushed changes to repository"))
 }
