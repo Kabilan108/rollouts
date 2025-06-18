@@ -103,6 +103,7 @@ type AppConfig struct {
 	Network   string
 	DryRun    bool
 	EnvFile   string
+	EditEnv   bool
 }
 
 type model struct {
@@ -319,6 +320,7 @@ func main() {
 		dryRun    bool
 		branch    string
 		envFile   string
+		edit      bool
 	)
 
 	initCmd := &cobra.Command{
@@ -335,6 +337,7 @@ func main() {
 				Network:   network,
 				DryRun:    dryRun,
 				EnvFile:   envFile,
+				EditEnv:   edit,
 			}
 			runInitWithAppConfig(c)
 		},
@@ -347,6 +350,7 @@ func main() {
 	initCmd.Flags().IntVar(&port, "port", 80, "port the container exposes (e.g., 80)")
 	initCmd.Flags().StringVar(&network, "network", "web", "traefik docker network")
 	initCmd.Flags().StringVar(&envFile, "env-file", "", "path to environment file. will be encrypted with agenix")
+	initCmd.Flags().BoolVar(&edit, "edit", false, "edit the environment file directly")
 	initCmd.Flags().BoolVar(&dryRun, "dry-run", false, "print out the generated config but don't write it to disk")
 
 	ghActionCmd := &cobra.Command{
@@ -381,6 +385,9 @@ func runInitWithAppConfig(app AppConfig) {
 	}
 
 	if finalModel.(model).finished {
+		if finalModel.(model).config.EditEnv {
+			fmt.Println(promptStyle.Render("Opening agenix editor for " + filepath.Join("servers", "apps", fmt.Sprintf("%s.age", finalModel.(model).config.Name))))
+		}
 		generateAndWriteConfig(finalModel.(model).config)
 	}
 }
@@ -393,7 +400,7 @@ func generateAndWriteConfig(app AppConfig) {
 		Subdomain:     app.Subdomain,
 		ContainerPort: app.Port,
 		Network:       app.Network,
-		HasSecrets:    app.EnvFile != "",
+		HasSecrets:    app.EnvFile != "" || (app.EditEnv && app.EnvFile == ""),
 	}
 
 	nixConfig := config.Generate()
@@ -413,14 +420,20 @@ func generateAndWriteConfig(app AppConfig) {
 	}
 	fmt.Println(successStyle.Render("Written to " + filePath))
 
-	if app.EnvFile != "" {
-		secretsNixPath := filepath.Join(app.ConfigDir, "..", "secrets.nix")
-		if err = updateSecretsNix(config.Name, secretsNixPath); err != nil {
-			fmt.Println(errorStyle.Render("Failed to update secrets.nix: " + err.Error()))
+	secretsNixPath := filepath.Join(app.ConfigDir, "..", "secrets.nix")
+	if err = updateSecretsNix(config.Name, secretsNixPath); err != nil {
+		fmt.Println(errorStyle.Render("Failed to update secrets.nix: " + err.Error()))
+		os.Exit(1)
+	}
+	fmt.Println(successStyle.Render("Updated " + secretsNixPath))
+
+	if app.EditEnv {
+		err = openAgenixEditor(config.Name, filepath.Join(app.ConfigDir, "apps"))
+		if err != nil {
+			fmt.Println(errorStyle.Render("Failed to open agenix editor: " + err.Error()))
 			os.Exit(1)
 		}
-		fmt.Println(successStyle.Render("Updated " + secretsNixPath))
-
+	} else if app.EnvFile != "" {
 		err = createAndEncryptSecret(app.EnvFile, config.Name, filepath.Join(app.ConfigDir, "apps"))
 		if err != nil {
 			fmt.Println(errorStyle.Render("Failed to encrypt secrets: " + err.Error()))
@@ -492,5 +505,25 @@ func createAndEncryptSecret(sourceEnvFile, appName, appsDir string) error {
 
 	fmt.Println(string(output))
 	fmt.Println(successStyle.Render("Successfully encrypted secret to " + encryptedFilePath))
+	return nil
+}
+
+func openAgenixEditor(appName, appsDir string) error {
+	encryptedFilePath := filepath.Join("servers", "apps", fmt.Sprintf("%s.age", appName))
+
+	fmt.Println(promptStyle.Render(fmt.Sprintf("Opening agenix editor for %s", encryptedFilePath)))
+
+	cmd := exec.Command("agenix", "-e", encryptedFilePath)
+	cmd.Dir = filepath.Join(appsDir, "..", "..")
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	err := cmd.Run()
+	if err != nil {
+		return fmt.Errorf("agenix editor command failed: %w", err)
+	}
+
+	fmt.Println(successStyle.Render("Successfully edited secret " + encryptedFilePath))
 	return nil
 }
