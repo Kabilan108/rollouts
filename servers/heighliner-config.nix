@@ -9,16 +9,13 @@
 let
   appsPath = ./apps;
   appFiles = builtins.attrNames (builtins.readDir appsPath);
-  importedApps = map (file: import (appsPath + "/${file}")) appFiles;
-
-  # merge imported app configs into attrset
-  appsConfig = lib.foldl lib.recursiveUpdate { } importedApps;
+  appModules = map (file: appsPath + "/${file}") (lib.filter (f: lib.hasSuffix ".nix" f) appFiles);
 
   dotfilesRepo = "https://github.com/kabilan108/dotfiles.git";
   dotfilesPath = "/etc/dotfiles";
 in
-lib.recursiveUpdate {
-  imports = [ (modulesPath + "/virtualisation/digital-ocean-config.nix") ];
+{
+  imports = [ (modulesPath + "/virtualisation/digital-ocean-config.nix") ] ++ appModules;
 
   system.stateVersion = "25.05";
   networking.hostName = "heighliner";
@@ -156,4 +153,4 @@ lib.recursiveUpdate {
     };
   };
 
-} appsConfig
+}

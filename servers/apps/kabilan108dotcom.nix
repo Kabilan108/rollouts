@@ -1,3 +1,4 @@
+{ config, ... }:
 {
   virtualisation.oci-containers.containers."kabilan108dotcom" = rec {
     image = "ghcr.io/kabilan108/kabilan108.com:latest";
