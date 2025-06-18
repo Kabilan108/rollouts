@@ -3,7 +3,9 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -34,6 +36,7 @@ type NixAppConfig struct {
 	Domain        string
 	Subdomain     string
 	Network       string
+	HasSecrets    bool
 }
 
 func (c *NixAppConfig) Generate() string {
@@ -45,7 +48,8 @@ func (c *NixAppConfig) Generate() string {
 		hostRule = fmt.Sprintf("Host(`%s`) || Host(`www.%s`)", c.Domain, c.Domain)
 	}
 
-	nixTemplate := `{
+	nixTemplate := `{ config, ... }:
+{
   virtualisation.oci-containers.containers."%s" = rec {
     image = "%s";
     ports = [ "127.0.0.1:%d:%d" ];
@@ -59,11 +63,20 @@ func (c *NixAppConfig) Generate() string {
       "traefik.http.routers.%s.rule" = "%s";
       "traefik.http.routers.%s.entrypoints" = "websecure";
       "traefik.http.routers.%s.tls.certresolver" = "letsencrypt";
-    };
-  };
+    };%s
+  };%s
 }`
 
+	// BUG: tis will collide quickly. figure out a better way to do this
 	hostPort := c.ContainerPort + 10000
+
+	var envFileAttr, ageSecretAttr string
+	if c.HasSecrets {
+		envFileAttr = fmt.Sprintf(`
+    EnvironmentFile = "${config.age.secrets."%s".path}";`, c.Name)
+		ageSecretAttr = fmt.Sprintf(`
+  age.secrets."%s".file = ./%s.age;`, c.Name, c.Name)
+	}
 
 	return fmt.Sprintf(nixTemplate,
 		c.Name,
@@ -75,6 +88,8 @@ func (c *NixAppConfig) Generate() string {
 		c.Name, hostRule,
 		c.Name,
 		c.Name,
+		envFileAttr,
+		ageSecretAttr,
 	)
 }
 
@@ -87,6 +102,7 @@ type AppConfig struct {
 	ConfigDir string
 	Network   string
 	DryRun    bool
+	EnvFile   string
 }
 
 type model struct {
@@ -302,6 +318,7 @@ func main() {
 		network   string
 		dryRun    bool
 		branch    string
+		envFile   string
 	)
 
 	initCmd := &cobra.Command{
@@ -317,6 +334,7 @@ func main() {
 				ConfigDir: configDir,
 				Network:   network,
 				DryRun:    dryRun,
+				EnvFile:   envFile,
 			}
 			runInitWithAppConfig(c)
 		},
@@ -328,6 +346,7 @@ func main() {
 	initCmd.Flags().StringVar(&subdomain, "subdomain", "", "subdomain (leave blank for none)")
 	initCmd.Flags().IntVar(&port, "port", 80, "port the container exposes (e.g., 80)")
 	initCmd.Flags().StringVar(&network, "network", "web", "traefik docker network")
+	initCmd.Flags().StringVar(&envFile, "env-file", "", "path to environment file. will be encrypted with agenix")
 	initCmd.Flags().BoolVar(&dryRun, "dry-run", false, "print out the generated config but don't write it to disk")
 
 	ghActionCmd := &cobra.Command{
@@ -374,6 +393,7 @@ func generateAndWriteConfig(app AppConfig) {
 		Subdomain:     app.Subdomain,
 		ContainerPort: app.Port,
 		Network:       app.Network,
+		HasSecrets:    app.EnvFile != "",
 	}
 
 	nixConfig := config.Generate()
@@ -381,15 +401,96 @@ func generateAndWriteConfig(app AppConfig) {
 	fmt.Println(nixConfig)
 
 	if app.DryRun {
+		fmt.Println(promptStyle.Render("\n--dry-run enabled, not writing files or encrypting secrets."))
 		return
 	}
 
 	filePath := filepath.Join(app.ConfigDir, "apps", fmt.Sprintf("%s.nix", config.Name))
-
 	err := os.WriteFile(filePath, []byte(nixConfig), 0o644)
 	if err != nil {
 		fmt.Println(errorStyle.Render("Failed to write file: " + err.Error()))
 		os.Exit(1)
 	}
 	fmt.Println(successStyle.Render("Written to " + filePath))
+
+	if app.EnvFile != "" {
+		secretsNixPath := filepath.Join(app.ConfigDir, "..", "secrets.nix")
+		if err = updateSecretsNix(config.Name, secretsNixPath); err != nil {
+			fmt.Println(errorStyle.Render("Failed to update secrets.nix: " + err.Error()))
+			os.Exit(1)
+		}
+		fmt.Println(successStyle.Render("Updated " + secretsNixPath))
+
+		err = createAndEncryptSecret(app.EnvFile, config.Name, filepath.Join(app.ConfigDir, "apps"))
+		if err != nil {
+			fmt.Println(errorStyle.Render("Failed to encrypt secrets: " + err.Error()))
+			os.Exit(1)
+		}
+	}
+}
+
+func updateSecretsNix(appName, secretsPath string) error {
+	content, err := os.ReadFile(secretsPath)
+	if err != nil {
+		return err
+	}
+
+	// check if .age file exists for the app
+	ageEntryPrefix := fmt.Sprintf(`"servers/apps/%s.age"`, appName)
+	if strings.Contains(string(content), ageEntryPrefix) {
+		fmt.Println(promptStyle.Render("Skipping " + ageEntryPrefix + " in " + secretsPath))
+		return nil
+	}
+
+	// find the public keys
+	re := regexp.MustCompile(`"servers\/secrets\/system\.age"\.publicKeys = (\[[^\]]*\]);`)
+	matches := re.FindSubmatch(content)
+	if len(matches) < 2 {
+		return fmt.Errorf("could not find system public keys in %s", secretsPath)
+	}
+	publicKeys := string(matches[1])
+
+	// prepare the new entry
+	newEntry := fmt.Sprintf(`
+  "servers/apps/%s.age".publicKeys = %s;
+`, appName, publicKeys)
+
+	// Find the last '}' in the file and insert the new entry before it.
+	lastBraceIndex := strings.LastIndex(string(content), "}")
+	if lastBraceIndex == -1 {
+		return fmt.Errorf("could not find closing brace in %s", secretsPath)
+	}
+
+	newContent := string(content[:lastBraceIndex]) + newEntry + string(content[lastBraceIndex:])
+
+	return os.WriteFile(secretsPath, []byte(newContent), 0o644)
+}
+
+// this function encrypts a given environment file to the correct location
+// using `agenix -e`.
+func createAndEncryptSecret(sourceEnvFile, appName, appsDir string) error {
+	sourceFile, err := os.Open(sourceEnvFile)
+	if err != nil {
+		return fmt.Errorf("could not open source env file %s: %w", sourceEnvFile, err)
+	}
+	defer sourceFile.Close()
+
+	encryptedFilePath := filepath.Join("servers", "apps", fmt.Sprintf("%s.age", appName))
+
+	fmt.Println(promptStyle.Render(fmt.Sprintf("Encrypting %s to %s", sourceEnvFile, encryptedFilePath)))
+
+	// prepare the `agenix -e` command.
+	// we run it from the repository root so agenix can find secrets.nix.
+	cmd := exec.Command("agenix", "-e", encryptedFilePath)
+	cmd.Dir = filepath.Join(appsDir, "..", "..")
+	cmd.Stdin = sourceFile // pipe contents of source file to stdin.
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("agenix encryption command failed:\n%s", string(output))
+	}
+
+	fmt.Println(string(output))
+	fmt.Println(successStyle.Render("Successfully encrypted secret to " + encryptedFilePath))
+	return nil
 }
