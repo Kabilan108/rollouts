@@ -333,9 +333,6 @@ func (m model) View() string {
 }
 
 func printGitHubAction(branch string) {
-	fmt.Println(headerStyle.Render("🚀 GitHub Actions Workflow"))
-	fmt.Println(subHeaderStyle.Render("Copy this workflow to .github/workflows/deploy.yml"))
-
 	yaml := `name: Build and Push to GitHub Container Registry
 
 on:
@@ -400,14 +397,17 @@ jobs:
             https://api.github.com/repos/Kabilan108/rollouts/dispatches \
             -d '{"event_type":"deploy"}'`
 
-	workflowBox := strings.Builder{}
-	workflowBox.WriteString(mutedStyle.Render(fmt.Sprintf(yaml, branch)))
-	fmt.Println(boxStyle.Render(workflowBox.String()))
+	// Print raw YAML to stdout
+	fmt.Printf(yaml, branch)
 
-	fmt.Println(promptStyle.Render("Next Steps:"))
-	fmt.Println("• Save this workflow to .github/workflows/deploy.yml")
-	fmt.Println("• Run: " + successStyle.Render("gh secret set DEPLOY_PAT --body <TOKEN>"))
-	fmt.Println("• Push to trigger the workflow")
+	// Print styled messages to stderr
+	fmt.Fprintln(os.Stderr, headerStyle.Render("🚀 GitHub Actions Workflow"))
+	fmt.Fprintln(os.Stderr, subHeaderStyle.Render("Copy this workflow to .github/workflows/deploy.yml"))
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, promptStyle.Render("Next Steps:"))
+	fmt.Fprintln(os.Stderr, "• Save this workflow to .github/workflows/deploy.yml")
+	fmt.Fprintln(os.Stderr, "• Run: "+successStyle.Render("gh secret set DEPLOY_PAT --body <TOKEN>"))
+	fmt.Fprintln(os.Stderr, "• Push to trigger the workflow")
 }
 
 func main() {
