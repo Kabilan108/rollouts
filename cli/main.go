@@ -91,7 +91,7 @@ func (c *NixAppConfig) Generate() string {
 		hostRule = fmt.Sprintf("Host(`%s`) || Host(`www.%s`)", c.Domain, c.Domain)
 	}
 
-	nixTemplate := `{ config, ... }:
+	nixTemplate := `{ config, pkgs, ... }:
 {
   virtualisation.oci-containers.containers."%s" = rec {
     image = "%s";
@@ -107,7 +107,12 @@ func (c *NixAppConfig) Generate() string {
       "traefik.http.routers.%s.entrypoints" = "websecure";
       "traefik.http.routers.%s.tls.certresolver" = "letsencrypt";
     };%s
-  };%s
+  };
+
+  # Force image pull on every deployment
+  systemd.services."docker-%s".serviceConfig.ExecStartPre = [
+    "${pkgs.docker}/bin/docker pull %s"
+  ];%s
 }`
 
 	// Use the allocated host port instead of calculating it
@@ -132,6 +137,8 @@ func (c *NixAppConfig) Generate() string {
 		c.Name,
 		c.Name,
 		envFileAttr,
+		c.Name,
+		c.Image,
 		ageSecretAttr,
 	)
 }

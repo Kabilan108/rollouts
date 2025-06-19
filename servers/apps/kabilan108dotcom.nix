@@ -1,4 +1,4 @@
-{ config, ... }:
+{ config, pkgs, ... }:
 {
   virtualisation.oci-containers.containers."kabilan108dotcom" = rec {
     image = "ghcr.io/kabilan108/kabilan108.com:latest";
@@ -15,4 +15,9 @@
       "traefik.http.routers.kabilan108dotcom.tls.certresolver" = "letsencrypt";
     };
   };
+
+  # Force image pull on every deployment
+  systemd.services."docker-kabilan108dotcom".serviceConfig.ExecStartPre = [
+    "${pkgs.docker}/bin/docker pull ghcr.io/kabilan108/kabilan108.com:latest"
+  ];
 }

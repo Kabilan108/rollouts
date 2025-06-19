@@ -1,4 +1,4 @@
-{ config, ... }:
+{ config, pkgs, ... }:
 {
   virtualisation.oci-containers.containers."toolsdotkabilan108dotcom" = rec {
     image = "ghcr.io/kabilan108/tools.kabilan108.com:latest";
@@ -16,5 +16,10 @@
     };
     environmentFiles = [ config.age.secrets."toolsdotkabilan108dotcom".path ];
   };
+
+  # Force image pull on every deployment
+  systemd.services."docker-toolsdotkabilan108dotcom".serviceConfig.ExecStartPre = [
+    "${pkgs.docker}/bin/docker pull ghcr.io/kabilan108/tools.kabilan108.com:latest"
+  ];
   age.secrets."toolsdotkabilan108dotcom".file = ./toolsdotkabilan108dotcom.age;
 }
