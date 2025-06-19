@@ -2,7 +2,7 @@
 {
   virtualisation.oci-containers.containers."toolsdotkabilan108dotcom" = rec {
     image = "ghcr.io/kabilan108/tools.kabilan108.com:latest";
-    ports = [ "127.0.0.1:13000:3000" ];
+    ports = [ "127.0.0.1:10081:3000" ];
     networks = [ "web" ];
     labels = {
       "traefik.enable" = "true";

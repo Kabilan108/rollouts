@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -65,6 +66,11 @@ var (
 			Foreground(mutedColor)
 )
 
+type PortRegistry struct {
+	Allocations map[string]int `json:"allocations"`
+	NextPort    int            `json:"next_port"`
+}
+
 type NixAppConfig struct {
 	Name          string
 	Image         string
@@ -73,6 +79,7 @@ type NixAppConfig struct {
 	Subdomain     string
 	Network       string
 	HasSecrets    bool
+	HostPort      int
 }
 
 func (c *NixAppConfig) Generate() string {
@@ -103,8 +110,8 @@ func (c *NixAppConfig) Generate() string {
   };%s
 }`
 
-	// BUG: tis will collide quickly. figure out a better way to do this
-	hostPort := c.ContainerPort + 10000
+	// Use the allocated host port instead of calculating it
+	hostPort := c.HostPort
 
 	var envFileAttr, ageSecretAttr string
 	if c.HasSecrets {
@@ -410,6 +417,120 @@ jobs:
 	fmt.Fprintln(os.Stderr, "• Push to trigger the workflow")
 }
 
+const (
+	// Port allocation range: 10000-19999 (10,000 ports available)
+	PortRangeStart = 10000
+	PortRangeEnd   = 19999
+)
+
+func loadPortRegistry(configDir string) (*PortRegistry, error) {
+	registryPath := filepath.Join(configDir, "ports.json")
+
+	registry := &PortRegistry{
+		Allocations: make(map[string]int),
+		NextPort:    PortRangeStart,
+	}
+
+	data, err := os.ReadFile(registryPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// Registry doesn't exist, scan existing apps to build it
+			if err := initializeRegistryFromExistingApps(registry, configDir); err != nil {
+				return nil, fmt.Errorf("failed to initialize registry from existing apps: %w", err)
+			}
+			return registry, nil
+		}
+		return nil, fmt.Errorf("failed to read port registry: %w", err)
+	}
+
+	if err := json.Unmarshal(data, registry); err != nil {
+		return nil, fmt.Errorf("failed to parse port registry: %w", err)
+	}
+
+	return registry, nil
+}
+
+func savePortRegistry(registry *PortRegistry, configDir string) error {
+	registryPath := filepath.Join(configDir, "ports.json")
+
+	data, err := json.MarshalIndent(registry, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal port registry: %w", err)
+	}
+
+	if err := os.WriteFile(registryPath, data, 0o644); err != nil {
+		return fmt.Errorf("failed to write port registry: %w", err)
+	}
+
+	return nil
+}
+
+func initializeRegistryFromExistingApps(registry *PortRegistry, configDir string) error {
+	appsDir := filepath.Join(configDir, "apps")
+	entries, err := os.ReadDir(appsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // No apps directory yet, that's fine
+		}
+		return fmt.Errorf("failed to read apps directory: %w", err)
+	}
+
+	portPattern := regexp.MustCompile(`ports = \[ "127\.0\.0\.1:(\d+):\d+" \];`)
+
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), ".nix") {
+			continue
+		}
+
+		appName := strings.TrimSuffix(entry.Name(), ".nix")
+		filePath := filepath.Join(appsDir, entry.Name())
+
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			continue // Skip files we can't read
+		}
+
+		matches := portPattern.FindSubmatch(content)
+		if len(matches) >= 2 {
+			if port, err := strconv.Atoi(string(matches[1])); err == nil {
+				registry.Allocations[appName] = port
+				if port >= registry.NextPort {
+					registry.NextPort = port + 1
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+func allocatePort(registry *PortRegistry, appName string) (int, error) {
+	// Check if app already has a port allocated
+	if port, exists := registry.Allocations[appName]; exists {
+		return port, nil
+	}
+
+	// Find next available port
+	for port := registry.NextPort; port <= PortRangeEnd; port++ {
+		// Check if port is already allocated
+		inUse := false
+		for _, allocatedPort := range registry.Allocations {
+			if allocatedPort == port {
+				inUse = true
+				break
+			}
+		}
+
+		if !inUse {
+			registry.Allocations[appName] = port
+			registry.NextPort = port + 1
+			return port, nil
+		}
+	}
+
+	return 0, fmt.Errorf("no available ports in range %d-%d", PortRangeStart, PortRangeEnd)
+}
+
 func main() {
 	var configDir string
 	defaultConfDir := filepath.Join(os.Getenv("HOME"), "repos", "rollouts", "servers")
@@ -513,6 +634,20 @@ func runInitWithAppConfig(app AppConfig) {
 }
 
 func generateAndWriteConfig(app AppConfig) {
+	// Load port registry
+	registry, err := loadPortRegistry(app.ConfigDir)
+	if err != nil {
+		fmt.Println(errorStyle.Render("✗ Failed to load port registry: " + err.Error()))
+		os.Exit(1)
+	}
+
+	// Allocate a port for this app
+	hostPort, err := allocatePort(registry, app.Name)
+	if err != nil {
+		fmt.Println(errorStyle.Render("✗ Failed to allocate port: " + err.Error()))
+		os.Exit(1)
+	}
+
 	config := NixAppConfig{
 		Name:          app.Name,
 		Image:         app.Image,
@@ -521,6 +656,7 @@ func generateAndWriteConfig(app AppConfig) {
 		ContainerPort: app.Port,
 		Network:       app.Network,
 		HasSecrets:    app.EnvFile != "" || (app.EditEnv && app.EnvFile == ""),
+		HostPort:      hostPort,
 	}
 
 	nixConfig := config.Generate()
@@ -538,7 +674,8 @@ func generateAndWriteConfig(app AppConfig) {
 	} else {
 		summaryBox.WriteString(fmt.Sprintf("• URL: %s\n", successStyle.Render(fmt.Sprintf("https://%s", config.Domain))))
 	}
-	summaryBox.WriteString(fmt.Sprintf("• Port: %s\n", successStyle.Render(fmt.Sprintf("%d", config.ContainerPort))))
+	summaryBox.WriteString(fmt.Sprintf("• Container Port: %s\n", successStyle.Render(fmt.Sprintf("%d", config.ContainerPort))))
+	summaryBox.WriteString(fmt.Sprintf("• Host Port: %s\n", successStyle.Render(fmt.Sprintf("%d", config.HostPort))))
 	summaryBox.WriteString(fmt.Sprintf("• Network: %s", successStyle.Render(config.Network)))
 	if config.HasSecrets {
 		summaryBox.WriteString(fmt.Sprintf("\n• Secrets: %s", successStyle.Render("Enabled")))
@@ -558,12 +695,18 @@ func generateAndWriteConfig(app AppConfig) {
 
 	// File operations
 	filePath := filepath.Join(app.ConfigDir, "apps", fmt.Sprintf("%s.nix", config.Name))
-	err := os.WriteFile(filePath, []byte(nixConfig), 0o644)
+	err = os.WriteFile(filePath, []byte(nixConfig), 0o644)
 	if err != nil {
 		fmt.Println(errorStyle.Render("✗ Failed to write file: " + err.Error()))
 		os.Exit(1)
 	}
 	fmt.Println(successStyle.Render("✓ Configuration written to " + filePath))
+
+	// Save port registry after successful file write
+	if err := savePortRegistry(registry, app.ConfigDir); err != nil {
+		fmt.Println(errorStyle.Render("✗ Failed to save port registry: " + err.Error()))
+		os.Exit(1)
+	}
 
 	// Handle secrets if any are needed
 	if config.HasSecrets {
@@ -680,7 +823,7 @@ func openAgenixEditor(appName, appsDir string) error {
 
 func runPushCommand() {
 	repoDir := filepath.Join(os.Getenv("HOME"), "repos", "rollouts")
-	
+
 	// check if we're in the rollouts directory structure
 	if wd, err := os.Getwd(); err == nil {
 		if strings.Contains(wd, "rollouts") {
@@ -767,7 +910,7 @@ func runPushCommand() {
 	if len(pushOutput) > 0 {
 		fmt.Println(mutedStyle.Render(strings.TrimSpace(string(pushOutput))))
 	}
-	
+
 	fmt.Println()
 	fmt.Println(successStyle.Render("✨ Push completed! Your changes are now live."))
 }
