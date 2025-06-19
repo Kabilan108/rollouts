@@ -560,6 +560,7 @@ func main() {
 		branch    string
 		envFile   string
 		edit      bool
+		messages  []string
 	)
 
 	initCmd := &cobra.Command{
@@ -601,17 +602,18 @@ func main() {
 	}
 	ghActionCmd.Flags().StringVar(&branch, "branch", "main", "branch to deploy from")
 
-	pushCmd := &cobra.Command{
-		Use:   "push",
+	deployCmd := &cobra.Command{
+		Use:   "deploy",
 		Short: "commit and push changes to the rollouts repository",
 		Run: func(cmd *cobra.Command, args []string) {
-			runPushCommand()
+			runPushCommand(messages)
 		},
 	}
+	deployCmd.Flags().StringArrayVarP(&messages, "message", "m", []string{}, "commit message (can be used multiple times for multi-line messages)")
 
 	rootCmd.AddCommand(initCmd)
 	rootCmd.AddCommand(ghActionCmd)
-	rootCmd.AddCommand(pushCmd)
+	rootCmd.AddCommand(deployCmd)
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
@@ -828,7 +830,7 @@ func openAgenixEditor(appName, appsDir string) error {
 	return nil
 }
 
-func runPushCommand() {
+func runPushCommand(messages []string) {
 	repoDir := filepath.Join(os.Getenv("HOME"), "repos", "rollouts")
 
 	// check if we're in the rollouts directory structure
@@ -878,7 +880,13 @@ func runPushCommand() {
 
 	// Commit changes
 	fmt.Println(promptStyle.Render("→ Creating commit..."))
-	commitCmd := exec.Command("git", "commit", "-m", "rollout: automated commit via push command")
+	var commitMsg string
+	if len(messages) > 0 {
+		commitMsg = strings.Join(messages, "\n")
+	} else {
+		commitMsg = "rollout: automated commit via deploy command"
+	}
+	commitCmd := exec.Command("git", "commit", "-m", commitMsg)
 	commitCmd.Dir = repoDir
 	commitOutput, err := commitCmd.CombinedOutput()
 	if err != nil {
