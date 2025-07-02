@@ -94,15 +94,7 @@
           buildInputs = with pkgs; [
             go
             gopls
-            nodejs_20
           ];
-          shellHook = ''
-            export NPM_CONFIG_PREFIX="$HOME/.npm-global"
-            export PATH="$HOME/.npm-global/bin:$PATH"
-            if [ ! -f "$HOME/.npm-global/bin/claude" ]; then
-              npm install -g @anthropic-ai/claude-code
-            fi
-          '';
         };
 
         default = pkgs.mkShell {
@@ -113,15 +105,7 @@
             agenix.packages.${system}.default
             deploy-rs.packages.${system}.default
             cachix
-            nodejs_20
           ];
-          shellHook = ''
-            export NPM_CONFIG_PREFIX="$HOME/.npm-global"
-            export PATH="$HOME/.npm-global/bin:$PATH"
-            if [ ! -f "$HOME/.npm-global/bin/claude" ]; then
-              npm install -g @anthropic-ai/claude-code
-            fi
-          '';
         };
       };
 
