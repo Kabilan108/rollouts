@@ -51,6 +51,15 @@ make clean
 # Non-interactive mode with flags
 ./build/rollout init --name myapp --image nginx:latest --domain example.com --port 80
 
+# With mounts (binds and named volumes)
+./build/rollout init \
+  --name myapp \
+  --image nginx:latest \
+  --domain example.com \
+  --port 80 \
+  --mount /var/lib/myapp/data:/data:rw \
+  --mount myvol:/cache:ro
+
 # Deploy changes with commit message
 ./build/rollout deploy -m "Add new application"
 

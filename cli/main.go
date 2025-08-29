@@ -80,6 +80,7 @@ type NixAppConfig struct {
 	Network       string
 	HasSecrets    bool
 	HostPort      int
+	Mounts        []string
 }
 
 func (c *NixAppConfig) Generate() string {
@@ -97,6 +98,7 @@ func (c *NixAppConfig) Generate() string {
     image = "%s";
     ports = [ "127.0.0.1:%d:%d" ];
     networks = [ "%s" ];
+%s
     labels = {
       "traefik.enable" = "true";
       "traefik.docker.network" = "%s";
@@ -126,11 +128,24 @@ func (c *NixAppConfig) Generate() string {
   age.secrets."%s".file = ./%s.age;`, c.Name, c.Name)
 	}
 
+	// Volumes (mounts) attribute
+	var volumesAttr string
+	if len(c.Mounts) > 0 {
+		// join mounts into Nix list of strings
+		mounts := make([]string, 0, len(c.Mounts))
+		for _, m := range c.Mounts {
+			// pass-through without validation
+			mounts = append(mounts, fmt.Sprintf("\"%s\"", m))
+		}
+		volumesAttr = fmt.Sprintf("    volumes = [ %s ];", strings.Join(mounts, " "))
+	}
+
 	return fmt.Sprintf(nixTemplate,
 		c.Name,
 		c.Image,
 		hostPort, c.ContainerPort,
 		c.Network,
+		volumesAttr,
 		c.Network,
 		c.Name, c.ContainerPort,
 		c.Name, hostRule,
@@ -154,6 +169,7 @@ type AppConfig struct {
 	DryRun    bool
 	EnvFile   string
 	EditEnv   bool
+	Mounts    []string
 }
 
 type model struct {
@@ -561,6 +577,7 @@ func main() {
 		envFile   string
 		edit      bool
 		messages  []string
+		mounts    []string
 	)
 
 	initCmd := &cobra.Command{
@@ -578,6 +595,7 @@ func main() {
 				DryRun:    dryRun,
 				EnvFile:   envFile,
 				EditEnv:   edit,
+				Mounts:    mounts,
 			}
 			runInitWithAppConfig(c)
 		},
@@ -592,6 +610,7 @@ func main() {
 	initCmd.Flags().StringVar(&envFile, "env-file", "", "path to environment file. will be encrypted with agenix")
 	initCmd.Flags().BoolVar(&edit, "edit", false, "edit the environment file directly")
 	initCmd.Flags().BoolVar(&dryRun, "dry-run", false, "print out the generated config but don't write it to disk")
+	initCmd.Flags().StringArrayVar(&mounts, "mount", []string{}, "add a mount (e.g., /host:/container[:ro|rw] or name:/container[:ro|rw])")
 
 	ghActionCmd := &cobra.Command{
 		Use:   "gh-action",
@@ -666,6 +685,7 @@ func generateAndWriteConfig(app AppConfig) {
 		Network:       app.Network,
 		HasSecrets:    app.EnvFile != "" || (app.EditEnv && app.EnvFile == ""),
 		HostPort:      hostPort,
+		Mounts:        app.Mounts,
 	}
 
 	nixConfig := config.Generate()
@@ -688,6 +708,12 @@ func generateAndWriteConfig(app AppConfig) {
 	summaryBox.WriteString(fmt.Sprintf("• Network: %s", successStyle.Render(config.Network)))
 	if config.HasSecrets {
 		summaryBox.WriteString(fmt.Sprintf("\n• Secrets: %s", successStyle.Render("Enabled")))
+	}
+	if len(config.Mounts) > 0 {
+		summaryBox.WriteString(fmt.Sprintf("\n• Mounts (%d):", len(config.Mounts)))
+		for _, mnt := range config.Mounts {
+			summaryBox.WriteString("\n  - " + successStyle.Render(mnt))
+		}
 	}
 	fmt.Println(boxStyle.Render(summaryBox.String()))
 
