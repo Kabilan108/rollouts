@@ -23,35 +23,45 @@ This is "rollout", a Go CLI tool that generates NixOS configurations for contain
 - `nix develop` - Enter development shell with Go toolchain
 
 **Usage:**
-- `./build/rollout init` - Interactive mode to create app config
-- `./build/rollout init --name myapp --image nginx:latest --domain example.com --port 80` - Non-interactive mode
+- `./build/rollout init` - Interactive TUI to create app config
+- `./build/rollout init --dry-run` - Interactive TUI, prints only the generated Nix config to stdout
+- `./build/rollout init --name myapp --image nginx:latest --domain example.com --port 80` - Non-interactive mode (requires all required flags)
+- Optional flags (both TUI and non-interactive): `--subdomain`, `--network`, `--mount`, `--env-file` or `--edit`
+- `./build/rollout gh-action --branch main` - Print GitHub Actions workflow (branch optional, default: main)
 
 ## Architecture
 
 **Core Components:**
-- `main.go` - Single-file application containing all logic
-- `AppConfig` struct - Holds user configuration (name, image, domain, port, etc.)
-- `NixAppConfig` struct - Transforms user config into NixOS container configuration
-- `model` struct - Bubble Tea TUI model for interactive input
+- `main.go` - Cobra CLI, non-interactive flow, generation/writing, outputs
+- `tui.go` - Bubble Tea TUI (`RunTUI`) for collecting interactive input
+- `AppConfig` - User input (name, image, domain, port, mounts, env vars)
+- `NixAppConfig` - Transforms user config into NixOS container configuration
 
 **Key Functions:**
-- `Generate()` method on `NixAppConfig` - Generates the NixOS configuration template
-- `runInitWithAppConfig()` - Orchestrates the interactive TUI or direct config generation
-- `generateAndWriteConfig()` - Outputs final config and writes to file system
+- `(*NixAppConfig).Generate()` - Generates the NixOS configuration template
+- `generateAndWriteConfig()` - Writes final config, updates port registry, and handles secrets
 
 **UI Framework:**
-- Uses Charm libraries: Bubble Tea (TUI), Bubbles (components), Lipgloss (styling)
-- Interactive prompts collect missing configuration values
-- Supports both interactive and flag-based CLI usage
+- Uses Charm libraries: Bubble Tea (TUI) and Lipgloss (styling)
+- Clean, straightforward TUI (no emojis), balanced color usage
+- Interactive mode is used only when running `rollout init` (or `--dry-run`)
+
+**TUI Fields:**
+- Name, Image, Domain, Subdomain (optional), Container Port, Network (default: web)
+- Secrets mode: `none | file | edit`
+  - `file`: prompts for path and encrypts with agenix
+  - `edit`: opens agenix editor after write
+- Mounts: comma-separated list, e.g. `/host:/container:rw, name:/container:ro`
 
 **Output:**
 - Generates NixOS `virtualisation.oci-containers` configuration
 - Includes Traefik labels for reverse proxy routing
-- Writes to `$HOME/dotfiles/servers/apps/{name}.nix` by default
-- Supports `--dry-run` flag to preview without writing
+- Writes to `$HOME/repos/rollouts/servers/apps/{name}.nix` by default (override with `--config-dir`)
+- `--dry-run` prints only the raw configuration to stdout (no summary)
+- Normal runs print a concise summary (no bounding box, no full config)
 
 **Dependencies:**
 - Cobra for CLI framework
 - Charm suite for TUI
 - Standard Go libraries for file operations
-- No external runtime dependencies
+- `agenix` required at runtime for `--env-file` or `--edit` flows

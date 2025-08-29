@@ -9,11 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 
-	"github.com/charmbracelet/bubbles/progress"
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 )
@@ -172,195 +168,7 @@ type AppConfig struct {
 	Mounts    []string
 }
 
-type model struct {
-	input        textinput.Model
-	config       AppConfig
-	fields       []string
-	current      int
-	finished     bool
-	interactions []string
-	progress     progress.Model
-	errorMsg     string
-	validating   bool
-}
-
-func initialModel(config AppConfig) model {
-	fields := []string{}
-
-	if config.Name == "" {
-		fields = append(fields, "name")
-	}
-	if config.Image == "" {
-		fields = append(fields, "image")
-	}
-	if config.Domain == "" {
-		fields = append(fields, "domain")
-	}
-	if config.Port == 0 {
-		fields = append(fields, "port")
-	}
-	if len(fields) > 0 && config.Subdomain == "" {
-		fields = append(fields, "subdomain")
-	}
-
-	ti := textinput.New()
-	ti.Focus()
-	ti.Prompt = ""
-	ti.CharLimit = 100
-
-	prog := progress.New(progress.WithDefaultGradient())
-	prog.Width = 40
-
-	return model{
-		input:        ti,
-		config:       config,
-		fields:       fields,
-		current:      0,
-		interactions: []string{},
-		progress:     prog,
-	}
-}
-
-func (m model) Init() tea.Cmd {
-	return textinput.Blink
-}
-
-type tickMsg time.Time
-
-func tickCmd() tea.Cmd {
-	return tea.Tick(time.Millisecond*100, func(t time.Time) tea.Msg {
-		return tickMsg(t)
-	})
-}
-
-func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		switch msg.String() {
-		case "ctrl+c", "esc":
-			return m, tea.Quit
-		case "enter":
-			value := strings.TrimSpace(m.input.Value())
-			m.errorMsg = ""
-
-			// Validation
-			if value == "" && m.fields[m.current] != "subdomain" {
-				m.errorMsg = "This field is required"
-				return m, nil
-			}
-
-			var prompt, displayValue string
-			switch m.fields[m.current] {
-			case "name":
-				prompt = "Project Name"
-				m.config.Name = value
-				displayValue = value
-			case "image":
-				prompt = "Docker Image"
-				m.config.Image = value
-				displayValue = value
-			case "domain":
-				prompt = "Main Domain"
-				m.config.Domain = value
-				displayValue = value
-			case "subdomain":
-				prompt = "Subdomain"
-				m.config.Subdomain = value
-				if value == "" {
-					displayValue = "(none)"
-				} else {
-					displayValue = value
-				}
-			case "port":
-				prompt = "Container Port"
-				if port, err := strconv.Atoi(value); err == nil && port > 0 && port < 65536 {
-					m.config.Port = port
-					displayValue = value
-				} else {
-					m.errorMsg = "Please enter a valid port number (1-65535)"
-					return m, nil
-				}
-			}
-
-			m.interactions = append(m.interactions, fmt.Sprintf("%s: %s", prompt, displayValue))
-
-			m.current++
-			if m.current >= len(m.fields) {
-				m.finished = true
-				return m, tea.Quit
-			}
-
-			m.input.SetValue("")
-			return m, textinput.Blink
-		}
-	case tickMsg:
-		if m.validating {
-			return m, tickCmd()
-		}
-	}
-
-	var cmd tea.Cmd
-	m.input, cmd = m.input.Update(msg)
-	return m, cmd
-}
-
-func (m model) View() string {
-	if len(m.fields) == 0 || m.current >= len(m.fields) {
-		return ""
-	}
-
-	var output strings.Builder
-
-	// Header
-	header := headerStyle.Render("🚀 Rollout Configuration")
-	subHeader := subHeaderStyle.Render("Generate NixOS container configs with Traefik")
-	output.WriteString(header + "\n" + subHeader + "\n\n")
-
-	// Progress
-	progressText := fmt.Sprintf("Step %d of %d", m.current+1, len(m.fields))
-	progressPercent := float64(m.current) / float64(len(m.fields))
-	progressView := m.progress.ViewAs(progressPercent)
-	output.WriteString(progressView + "\n" + mutedStyle.Render(progressText) + "\n\n")
-
-	// Previous interactions - compact
-	for _, interaction := range m.interactions {
-		output.WriteString(completedStyle.Render(interaction) + "\n")
-	}
-
-	// Current field
-	var prompt, placeholder string
-	switch m.fields[m.current] {
-	case "name":
-		prompt = "Project Name"
-		placeholder = "my-awesome-app"
-	case "image":
-		prompt = "Docker Image"
-		placeholder = "nginx:latest"
-	case "domain":
-		prompt = "Main Domain"
-		placeholder = "example.com"
-	case "subdomain":
-		prompt = "Subdomain (optional)"
-		placeholder = "api"
-	case "port":
-		prompt = "Container Port"
-		placeholder = "80"
-	}
-
-	m.input.Placeholder = placeholder
-
-	// Simple input
-	output.WriteString(promptStyle.Render("→ "+prompt) + "\n")
-	output.WriteString(inputStyle.Render(m.input.View()) + "\n")
-
-	if m.errorMsg != "" {
-		output.WriteString(errorStyle.Render("✗ "+m.errorMsg) + "\n")
-	}
-
-	output.WriteString(mutedStyle.Render("Press Enter to continue • Ctrl+C to quit"))
-
-	return output.String()
-}
+// AppConfig holds the configuration fields for an app
 
 func printGitHubAction(branch string) {
 	yaml := `name: Build and Push to GitHub Container Registry
@@ -584,6 +392,67 @@ func main() {
 		Use:   "init",
 		Short: "create a new nix config for an app",
 		Run: func(cmd *cobra.Command, args []string) {
+			// TUI only when no init flags are passed, or when only --dry-run is passed
+			changedName := cmd.Flags().Changed("name")
+			changedImage := cmd.Flags().Changed("image")
+			changedDomain := cmd.Flags().Changed("domain")
+			changedPort := cmd.Flags().Changed("port")
+			changedSub := cmd.Flags().Changed("subdomain")
+			changedNet := cmd.Flags().Changed("network")
+			changedEnv := cmd.Flags().Changed("env-file")
+			changedEdit := cmd.Flags().Changed("edit")
+			changedMount := cmd.Flags().Changed("mount")
+			changedDry := cmd.Flags().Changed("dry-run")
+
+			anyInitFlag := changedName || changedImage || changedDomain || changedPort || changedSub || changedNet || changedEnv || changedEdit || changedMount || changedDry
+			onlyDryRun := changedDry && !(changedName || changedImage || changedDomain || changedPort || changedSub || changedNet || changedEnv || changedEdit || changedMount)
+			noInitFlags := !anyInitFlag
+
+			usingTUI := onlyDryRun || noInitFlags
+
+			if usingTUI {
+				// Interactive: collect all required fields via TUI
+				initial := AppConfig{
+					ConfigDir: configDir,
+					Network:   network,
+					DryRun:    dryRun,
+					EnvFile:   envFile,
+					EditEnv:   edit,
+					Mounts:    mounts,
+				}
+				cfg, ok, err := RunTUI(initial)
+				if err != nil {
+					fmt.Println(errorStyle.Render("Error: " + err.Error()))
+					os.Exit(1)
+				}
+				if !ok {
+					// user canceled
+					return
+				}
+				generateAndWriteConfig(cfg)
+				return
+			}
+
+			// Non-interactive: validate required flags
+			missing := []string{}
+			if name == "" {
+				missing = append(missing, "--name")
+			}
+			if image == "" {
+				missing = append(missing, "--image")
+			}
+			if domain == "" {
+				missing = append(missing, "--domain")
+			}
+			if port <= 0 || port > 65535 {
+				missing = append(missing, "--port (1-65535)")
+			}
+			if len(missing) > 0 {
+				fmt.Println(errorStyle.Render("Missing required flags: ") + strings.Join(missing, ", "))
+				fmt.Println(mutedStyle.Render("Either pass none of the required flags to use the interactive TUI, or provide all required flags."))
+				os.Exit(1)
+			}
+
 			c := AppConfig{
 				Name:      name,
 				Image:     image,
@@ -597,7 +466,7 @@ func main() {
 				EditEnv:   edit,
 				Mounts:    mounts,
 			}
-			runInitWithAppConfig(c)
+			generateAndWriteConfig(c)
 		},
 	}
 
@@ -638,29 +507,6 @@ func main() {
 	}
 }
 
-func runInitWithAppConfig(app AppConfig) {
-	m := initialModel(app)
-
-	if len(m.fields) == 0 {
-		generateAndWriteConfig(app)
-		return
-	}
-
-	p := tea.NewProgram(m)
-	finalModel, err := p.Run()
-	if err != nil {
-		fmt.Println(errorStyle.Render("Error: " + err.Error()))
-		os.Exit(1)
-	}
-
-	if finalModel.(model).finished {
-		if finalModel.(model).config.EditEnv {
-			fmt.Println(promptStyle.Render("Opening agenix editor for " + filepath.Join("servers", "apps", fmt.Sprintf("%s.age", finalModel.(model).config.Name))))
-		}
-		generateAndWriteConfig(finalModel.(model).config)
-	}
-}
-
 func generateAndWriteConfig(app AppConfig) {
 	// Load port registry
 	registry, err := loadPortRegistry(app.ConfigDir)
@@ -690,42 +536,32 @@ func generateAndWriteConfig(app AppConfig) {
 
 	nixConfig := config.Generate()
 
-	// Configuration summary
-	fmt.Println(headerStyle.Render("✨ Configuration Generated"))
-	fmt.Println()
-
-	summaryBox := strings.Builder{}
-	summaryBox.WriteString(promptStyle.Render("Configuration Summary") + "\n")
-	summaryBox.WriteString(fmt.Sprintf("• Name: %s\n", successStyle.Render(config.Name)))
-	summaryBox.WriteString(fmt.Sprintf("• Image: %s\n", successStyle.Render(config.Image)))
-	if config.Subdomain != "" {
-		summaryBox.WriteString(fmt.Sprintf("• URL: %s\n", successStyle.Render(fmt.Sprintf("https://%s.%s", config.Subdomain, config.Domain))))
-	} else {
-		summaryBox.WriteString(fmt.Sprintf("• URL: %s\n", successStyle.Render(fmt.Sprintf("https://%s", config.Domain))))
+	// Dry-run: print only raw config, no extra output
+	if app.DryRun {
+		fmt.Print(nixConfig)
+		return
 	}
-	summaryBox.WriteString(fmt.Sprintf("• Container Port: %s\n", successStyle.Render(fmt.Sprintf("%d", config.ContainerPort))))
-	summaryBox.WriteString(fmt.Sprintf("• Host Port: %s\n", successStyle.Render(fmt.Sprintf("%d", config.HostPort))))
-	summaryBox.WriteString(fmt.Sprintf("• Network: %s", successStyle.Render(config.Network)))
+
+	// Simplified summary (no boxes, no generated config echo)
+	fmt.Println(headerStyle.Render("✨ Configuration Summary"))
+	fmt.Printf("Name: %s\n", successStyle.Render(config.Name))
+	fmt.Printf("Image: %s\n", successStyle.Render(config.Image))
+	if config.Subdomain != "" {
+		fmt.Printf("URL: %s\n", successStyle.Render(fmt.Sprintf("https://%s.%s", config.Subdomain, config.Domain)))
+	} else {
+		fmt.Printf("URL: %s\n", successStyle.Render(fmt.Sprintf("https://%s", config.Domain)))
+	}
+	fmt.Printf("Container Port: %s\n", successStyle.Render(fmt.Sprintf("%d", config.ContainerPort)))
+	fmt.Printf("Host Port: %s\n", successStyle.Render(fmt.Sprintf("%d", config.HostPort)))
+	fmt.Printf("Network: %s\n", successStyle.Render(config.Network))
 	if config.HasSecrets {
-		summaryBox.WriteString(fmt.Sprintf("\n• Secrets: %s", successStyle.Render("Enabled")))
+		fmt.Printf("Secrets: %s\n", successStyle.Render("Enabled"))
 	}
 	if len(config.Mounts) > 0 {
-		summaryBox.WriteString(fmt.Sprintf("\n• Mounts (%d):", len(config.Mounts)))
+		fmt.Printf("Mounts (%d):\n", len(config.Mounts))
 		for _, mnt := range config.Mounts {
-			summaryBox.WriteString("\n  - " + successStyle.Render(mnt))
+			fmt.Println("  - " + successStyle.Render(mnt))
 		}
-	}
-	fmt.Println(boxStyle.Render(summaryBox.String()))
-
-	// Generated config
-	configBox := strings.Builder{}
-	configBox.WriteString(promptStyle.Render("Generated NixOS Configuration") + "\n")
-	configBox.WriteString(mutedStyle.Render(nixConfig))
-	fmt.Println(boxStyle.Render(configBox.String()))
-
-	if app.DryRun {
-		fmt.Println(promptStyle.Render("ℹ️ Dry run mode - no files written"))
-		return
 	}
 
 	// File operations

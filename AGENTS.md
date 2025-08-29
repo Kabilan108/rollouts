@@ -45,26 +45,31 @@ make clean
 
 ### CLI Usage
 ```bash
-# Interactive mode to create app config
+# Interactive mode (TUI)
 ./build/rollout init
 
-# Non-interactive mode with flags
+# Interactive dry-run (TUI), prints only the Nix config to stdout
+./build/rollout init --dry-run
+
+# Non-interactive mode (requires all required flags)
 ./build/rollout init --name myapp --image nginx:latest --domain example.com --port 80
 
-# With mounts (binds and named volumes)
+# With mounts (binds and named volumes) and secrets
 ./build/rollout init \
   --name myapp \
   --image nginx:latest \
   --domain example.com \
   --port 80 \
+  --network web \
   --mount /var/lib/myapp/data:/data:rw \
-  --mount myvol:/cache:ro
+  --mount myvol:/cache:ro \
+  --env-file ./myapp.env      # or use --edit to open the editor
 
 # Deploy changes with commit message
 ./build/rollout deploy -m "Add new application"
 
-# Generate GitHub Actions workflow
-./build/rollout gh-action --name myapp
+# Generate GitHub Actions workflow (optional --branch, default: main)
+./build/rollout gh-action --branch main
 ```
 
 ### Server Deployment
@@ -93,22 +98,24 @@ agenix -e servers/secrets/system.age
 
 ## Architecture
 
-### CLI Tool (`/cli/main.go`)
-Single-file Go application (~900+ lines) that generates NixOS container configurations:
+### CLI Tool (`/cli/`)
+Go CLI that generates NixOS container configurations:
 
 **Core Data Structures:**
-- `AppConfig`: User input (name, image, domain, port, volumes, env vars)
+- `AppConfig`: User input (name, image, domain, port, mounts, env vars)
 - `NixAppConfig`: Transforms to NixOS `virtualisation.oci-containers` format  
 - `PortRegistry`: JSON-based port allocation tracker (prevents conflicts)
-- `model`: Bubble Tea TUI state machine for interactive prompts
+
+**CLI + TUI:**
+- `cli/main.go`: Cobra CLI, non-interactive path, output + file writing
+- `cli/tui.go`: Bubble Tea TUI for interactive input (`RunTUI`)
 
 **Key Functions:**
-- `Generate()`: Creates NixOS configuration from template
-- `runInitWithAppConfig()`: Orchestrates config generation workflow
-- `allocatePort()`: Finds next available port starting from 10080
-- `generateAndWriteConfig()`: Writes final config to filesystem
+- `(*NixAppConfig).Generate()`: Creates the NixOS configuration template
+- `allocatePort()`: Finds next available port in 10000–19999
+- `generateAndWriteConfig()`: Writes final config and updates registry/secrets
 
-**Output Path:** `$HOME/dotfiles/servers/apps/{name}.nix` (configurable with `--output-dir`)
+**Output Path:** `$HOME/repos/rollouts/servers/apps/{name}.nix` (configurable with `--config-dir`)
 
 ### Server Infrastructure (`/servers/`)
 
@@ -157,16 +164,15 @@ nix flake check
 # Build configuration without deploying
 nix build .#nixosConfigurations.heighliner.config.system.build.toplevel
 
-# Test CLI locally with dry-run
+# Test CLI locally with dry-run (TUI)
 ./build/rollout init --dry-run
 ```
 
 ## Code Style Guidelines
 
 ### Go Code (`/cli/`)
-- Single-file architecture for simplicity
-- Cobra for CLI framework, Bubble Tea for TUI
-- Catppuccin Mocha color scheme for UI
+- Cobra for CLI framework; Bubble Tea for TUI
+- TUI is clean and minimal (no emojis), with balanced color usage
 - Error messages should be user-friendly with suggestions
 
 ### Nix Configurations
@@ -177,7 +183,8 @@ nix build .#nixosConfigurations.heighliner.config.system.build.toplevel
 
 ## Important Files
 
-- `/cli/main.go`: Entire CLI application logic
+- `/cli/main.go`: CLI commands, generation, writing, outputs
+- `/cli/tui.go`: Interactive TUI (RunTUI)
 - `/servers/heighliner-config.nix`: Main server configuration
 - `/servers/ports.json`: Port allocation registry
 - `/flake.nix`: Build system and deployment configuration
